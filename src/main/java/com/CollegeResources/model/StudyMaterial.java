@@ -2,6 +2,8 @@ package com.CollegeResources.model;
 
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.mapping.Document;
+import org.springframework.data.mongodb.core.mapping.Field;
+
 import java.time.LocalDateTime;
 
 @Document(collection = "studyMaterials")
@@ -19,17 +21,20 @@ public class StudyMaterial {
     private String uploadedBy;
     private LocalDateTime uploadDate;
 
+    @Field("fileUrl")
+    private String fileUrl;
+
     public StudyMaterial() {
     }
 
     public StudyMaterial(String title, String description, String fileName,
-                         String fileType, String filePath, String courseId,
+                         String fileType, String fileUrl, String courseId,
                          String uploadedBy) {
         this.title = title;
         this.description = description;
         this.fileName = fileName;
         this.fileType = fileType;
-        this.filePath = filePath;
+        this.fileUrl = fileUrl;
         this.courseId = courseId;
         this.uploadedBy = uploadedBy;
         this.uploadDate = LocalDateTime.now();
@@ -102,6 +107,14 @@ public class StudyMaterial {
 
     public LocalDateTime getUploadDate() {
         return uploadDate;
+    }
+
+    public String getFileUrl() {
+        return fileUrl;
+    }
+
+    public void setFileUrl(String fileUrl) {
+        this.fileUrl = fileUrl;
     }
 
     public void setUploadDate(LocalDateTime uploadDate) {

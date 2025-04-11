@@ -4,6 +4,7 @@ import com.CollegeResources.model.Course;
 import com.CollegeResources.model.Role;
 import com.CollegeResources.model.StudyMaterial;
 import com.CollegeResources.model.User;
+import com.CollegeResources.repository.StudyMaterialRepository;
 import com.CollegeResources.repository.UserRepository;
 import com.CollegeResources.service.CourseService;
 import com.CollegeResources.service.StudyMaterialService;
@@ -22,6 +23,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.io.*;
 import java.net.MalformedURLException;
+import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -36,13 +38,15 @@ public class StudyMaterialController {
     private final CourseService courseService;
     private final UserRepository userRepository;
     private final String uploadDir;
+    private final StudyMaterialRepository studyMaterialRepository;
 
     public StudyMaterialController(StudyMaterialService materialService,
                                    CourseService courseService,
-                                   UserRepository userRepository) {
+                                   UserRepository userRepository, StudyMaterialRepository studyMaterialRepository) {
         this.materialService = materialService;
         this.courseService = courseService;
         this.userRepository = userRepository;
+        this.studyMaterialRepository = studyMaterialRepository;
         this.uploadDir = "uploads"; // Should match the value in application.properties
     }
 
@@ -334,31 +338,20 @@ public class StudyMaterialController {
     }
 
 
-    @GetMapping("/view/{filename}")
-    public ResponseEntity<?> viewMaterial(@PathVariable String filename) {
-        Path filePath = Paths.get(uploadDir, filename);
+    @GetMapping("/view/{id}")
+    public ResponseEntity<?> viewMaterial(@PathVariable String id) {
+        Optional<StudyMaterial> materialOpt = studyMaterialRepository.findById(id);
 
-        try {
-            Resource resource = new UrlResource(filePath.toUri());
-
-            if (!resource.exists() || !resource.isReadable()) {
-                return ResponseEntity.notFound().build();
-            }
-
-            // Get content type based on file extension
-            String fileExtension = filename.substring(filename.lastIndexOf('.') + 1);
-            String contentType = determineContentType(fileExtension);
-
-            // For viewing in browser, use "inline" instead of "attachment"
-            return ResponseEntity.ok()
-                    .header("X-Frame-Options", "ALLOWALL")
-                    .header(HttpHeaders.CONTENT_DISPOSITION, "inline; filename=\"" + filename + "\"")
-                    .contentType(MediaType.parseMediaType(contentType))
-                    .body(resource);
-        } catch (MalformedURLException e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body("Error: " + e.getMessage());
+        if (materialOpt.isEmpty()) {
+            return ResponseEntity.notFound().build();
         }
+        StudyMaterial material = materialOpt.get();
+        String fileUrl = material.getFileUrl();
+
+        return ResponseEntity.status(HttpStatus.FOUND)
+                .location(URI.create(fileUrl))
+                .build();
+
     }
 
     // Helper method to determine content type

@@ -2,30 +2,29 @@ package com.CollegeResources.service;
 
 import com.CollegeResources.model.StudyMaterial;
 import com.CollegeResources.repository.StudyMaterialRepository;
+import com.cloudinary.Cloudinary;
+import com.cloudinary.utils.ObjectUtils;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
-import java.io.InputStream;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.nio.file.StandardCopyOption;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
-import java.util.UUID;
 
 @Service
 public class StudyMaterialService {
 
     private final StudyMaterialRepository studyMaterialRepository;
+    private final Cloudinary cloudinary;
 
     @Value("${file.upload-dir}")
     private String uploadDir;
 
-    public StudyMaterialService(StudyMaterialRepository studyMaterialRepository) {
+    public StudyMaterialService(StudyMaterialRepository studyMaterialRepository, Cloudinary cloudinary) {
         this.studyMaterialRepository = studyMaterialRepository;
+        this.cloudinary = cloudinary;
     }
 
     /**
@@ -33,52 +32,16 @@ public class StudyMaterialService {
      */
     public StudyMaterial uploadMaterial(MultipartFile file, String title, String description,
                                         String courseId, String uploadedBy) throws IOException {
-        // Create upload directory if it doesn't exist
-        Path uploadPath = Paths.get(uploadDir).toAbsolutePath();
-        if (!Files.exists(uploadPath)) {
-            Files.createDirectories(uploadPath);
-            System.out.println("Created upload directory: " + uploadPath);
-        }
-
-        System.out.println("Upload directory: " + uploadPath);
-        System.out.println("File to upload: " + file.getOriginalFilename() + ", size: " + file.getSize() + " bytes");
-
         if (file.isEmpty()) {
             throw new IOException("Failed to store empty file");
         }
 
-        // Generate unique file name
+        Map uploadResult = cloudinary.uploader().upload(file.getBytes(),
+                ObjectUtils.asMap("resource_type", "raw"));
+
         String originalFilename = file.getOriginalFilename();
         String fileExtension = getFileExtension(originalFilename);
-        String uniqueFilename = UUID.randomUUID().toString() + "." + fileExtension;
-
-        // Save file to disk with rigorous error checking
-        Path filePath = uploadPath.resolve(uniqueFilename);
-        System.out.println("Saving file to: " + filePath);
-
-        try (InputStream inputStream = file.getInputStream()) {
-            // Read the content of the file into memory to verify it's not empty
-            byte[] bytes = inputStream.readAllBytes();
-            System.out.println("Read " + bytes.length + " bytes from input stream");
-
-            if (bytes.length == 0) {
-                throw new IOException("File content is empty");
-            }
-
-            // Write the file content to disk
-            Files.write(filePath, bytes);
-
-            // Verify the file was saved correctly
-            if (Files.exists(filePath)) {
-                long fileSize = Files.size(filePath);
-                System.out.println("File saved successfully. Size on disk: " + fileSize + " bytes");
-                if (fileSize == 0) {
-                    throw new IOException("File was saved but is empty on disk");
-                }
-            } else {
-                throw new IOException("File was not saved to disk");
-            }
-        }
+        String cloudinaryUrl = uploadResult.get("secure_url").toString();
 
         // Create and save study material
         StudyMaterial material = new StudyMaterial(
@@ -86,7 +49,7 @@ public class StudyMaterialService {
                 description,
                 originalFilename,
                 fileExtension,
-                uniqueFilename,  // Store just the filename, not the full path
+                cloudinaryUrl,  // Store just the filename, not the full path
                 courseId,
                 uploadedBy
         );
@@ -122,9 +85,10 @@ public class StudyMaterialService {
         if (materialOpt.isPresent()) {
             StudyMaterial material = materialOpt.get();
 
-            // Delete file from disk
-            Path filePath = Paths.get(uploadDir).resolve(material.getFilePath());
-            Files.deleteIfExists(filePath);
+            String fileUrl = material.getFileUrl();
+            String publicId = extractPublicIdFromUrl(fileUrl);
+
+            cloudinary.uploader().destroy(publicId, ObjectUtils.emptyMap());
 
             // Delete from database
             studyMaterialRepository.deleteById(id);
@@ -165,4 +129,28 @@ public class StudyMaterialService {
         }
         return filename.substring(dotIndex + 1);
     }
+
+    private String extractPublicIdFromUrl(String fileUrl) {
+        // Example URL: https://res.cloudinary.com/your-cloud-name/raw/upload/v1234567890/my-folder/my-file.pdf
+        // Public ID: my-folder/my-file (without extension)
+
+        try {
+            String[] parts = fileUrl.split("/");
+            String filenameWithExt = parts[parts.length - 1]; // e.g., my-file.pdf
+            String filename = filenameWithExt.substring(0, filenameWithExt.lastIndexOf(".")); // my-file
+
+            // Get folder structure from the URL
+            StringBuilder publicIdBuilder = new StringBuilder();
+            for (int i = parts.length - 2; i >= 0; i--) {
+                if (parts[i].equals("upload")) break;
+                publicIdBuilder.insert(0, parts[i] + "/");
+            }
+            publicIdBuilder.append(filename);
+
+            return publicIdBuilder.toString();
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to extract publicId from Cloudinary URL: " + fileUrl);
+        }
+    }
+
 }
