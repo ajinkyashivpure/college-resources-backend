@@ -2,29 +2,45 @@ package com.CollegeResources.service;
 
 import com.CollegeResources.model.StudyMaterial;
 import com.CollegeResources.repository.StudyMaterialRepository;
-import com.cloudinary.Cloudinary;
-import com.cloudinary.utils.ObjectUtils;
+import com.amazonaws.AmazonServiceException;
+import com.amazonaws.SdkClientException;
+import com.amazonaws.auth.AWSStaticCredentialsProvider;
+import com.amazonaws.auth.BasicAWSCredentials;
+import com.amazonaws.services.s3.AmazonS3;
+import com.amazonaws.services.s3.AmazonS3ClientBuilder;
+import com.amazonaws.services.s3.model.CannedAccessControlList;
+import com.amazonaws.services.s3.model.ObjectMetadata;
+import com.amazonaws.services.s3.model.PutObjectRequest;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
 import java.util.List;
-import java.util.Map;
+
 import java.util.Optional;
+import java.util.UUID;
 
 @Service
 public class StudyMaterialService {
 
     private final StudyMaterialRepository studyMaterialRepository;
-    private final Cloudinary cloudinary;
 
-    @Value("${file.upload-dir}")
-    private String uploadDir;
 
-    public StudyMaterialService(StudyMaterialRepository studyMaterialRepository, Cloudinary cloudinary) {
+    @Value("${cloud.aws.credentials.access-key}")
+    private String accessKey;
+
+    @Value("${cloud.aws.credentials.secret-key}")
+    private String secretKey;
+
+    @Value("${s3.bucket.name}")
+    private String bucketName;
+
+    @Value("${cloud.aws.region.static}")
+    private String region;
+
+    public StudyMaterialService(StudyMaterialRepository studyMaterialRepository) {
         this.studyMaterialRepository = studyMaterialRepository;
-        this.cloudinary = cloudinary;
     }
 
     /**
@@ -36,25 +52,53 @@ public class StudyMaterialService {
             throw new IOException("Failed to store empty file");
         }
 
-        Map uploadResult = cloudinary.uploader().upload(file.getBytes(),
-                ObjectUtils.asMap("resource_type", "raw"));
 
+        // Create S3 client
+        AmazonS3 s3Client = AmazonS3ClientBuilder.standard()
+                .withCredentials(new AWSStaticCredentialsProvider(
+                        new BasicAWSCredentials(accessKey, secretKey)))
+                .withRegion(region)
+                .build();
+
+        //unique file name
         String originalFilename = file.getOriginalFilename();
         String fileExtension = getFileExtension(originalFilename);
-        String cloudinaryUrl = uploadResult.get("secure_url").toString();
+        String uniqueFileName = UUID.randomUUID().toString() + "." + fileExtension;
 
-        // Create and save study material
-        StudyMaterial material = new StudyMaterial(
-                title,
-                description,
-                originalFilename,
-                fileExtension,
-                cloudinaryUrl,  // Store just the filename, not the full path
-                courseId,
-                uploadedBy
-        );
+        // Upload the file to S3
+        try {
+            ObjectMetadata metadata = new ObjectMetadata();
+            metadata.setContentLength(file.getSize());
+            metadata.setContentType(file.getContentType());
 
-        return studyMaterialRepository.save(material);
+            s3Client.putObject(new PutObjectRequest(
+                    bucketName,
+                    uniqueFileName,
+                    file.getInputStream(),
+                    metadata)
+                    .withCannedAcl(CannedAccessControlList.PublicRead)); // Makes the file publicly readable
+
+            // S3 URL
+            String s3Url = "https://" + bucketName + ".s3." + region + ".amazonaws.com/" + uniqueFileName;
+
+            // save
+            StudyMaterial material = new StudyMaterial(
+                    title,
+                    description,
+                    originalFilename,
+                    fileExtension,
+                    s3Url,
+                    courseId,
+                    uploadedBy
+            );
+
+            return studyMaterialRepository.save(material);
+
+        } catch (AmazonServiceException e) {
+            throw new IOException("Failed to upload file to Amazon S3: " + e.getMessage());
+        } catch (SdkClientException e) {
+            throw new IOException("Error communicating with Amazon S3: " + e.getMessage());
+        }
     }
     /**
      * Gets all study materials
@@ -81,18 +125,18 @@ public class StudyMaterialService {
      * Deletes a study material
      */
     public void deleteMaterial(String id) throws IOException {
-        Optional<StudyMaterial> materialOpt = studyMaterialRepository.findById(id);
-        if (materialOpt.isPresent()) {
-            StudyMaterial material = materialOpt.get();
-
-            String fileUrl = material.getFileUrl();
-            String publicId = extractPublicIdFromUrl(fileUrl);
-
-            cloudinary.uploader().destroy(publicId, ObjectUtils.emptyMap());
-
-            // Delete from database
-            studyMaterialRepository.deleteById(id);
-        }
+//        Optional<StudyMaterial> materialOpt = studyMaterialRepository.findById(id);
+//        if (materialOpt.isPresent()) {
+//            StudyMaterial material = materialOpt.get();
+//
+//            String fileUrl = material.getFileUrl();
+//            String publicId = extractPublicIdFromUrl(fileUrl);
+//
+//            cloudinary.uploader().destroy(publicId, ObjectUtils.emptyMap());
+//
+//            // Delete from database
+//            studyMaterialRepository.deleteById(id);
+//        }
     }
 
     /**

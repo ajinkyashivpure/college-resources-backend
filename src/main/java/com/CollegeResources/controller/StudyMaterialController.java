@@ -8,8 +8,15 @@ import com.CollegeResources.repository.StudyMaterialRepository;
 import com.CollegeResources.repository.UserRepository;
 import com.CollegeResources.service.CourseService;
 import com.CollegeResources.service.StudyMaterialService;
+import com.amazonaws.auth.AWSStaticCredentialsProvider;
+import com.amazonaws.auth.BasicAWSCredentials;
+import com.amazonaws.services.s3.AmazonS3;
+import com.amazonaws.services.s3.AmazonS3ClientBuilder;
+import com.amazonaws.services.s3.model.AmazonS3Exception;
+import com.amazonaws.services.s3.model.ObjectMetadata;
+import com.amazonaws.services.s3.model.S3Object;
 import jakarta.servlet.http.HttpServletResponse;
-import org.apache.catalina.connector.ClientAbortException;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.UrlResource;
 import org.springframework.http.HttpHeaders;
@@ -24,6 +31,8 @@ import org.springframework.web.multipart.MultipartFile;
 import java.io.*;
 import java.net.MalformedURLException;
 import java.net.URI;
+import java.net.URISyntaxException;
+import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -39,6 +48,19 @@ public class StudyMaterialController {
     private final UserRepository userRepository;
     private final String uploadDir;
     private final StudyMaterialRepository studyMaterialRepository;
+
+    @Value("${s3.bucket.name}")
+    private String bucketName;
+
+    @Value("${cloud.aws.region.static}")
+    private String region;
+
+    @Value("${cloud.aws.credentials.access-key}")
+    private String accessKey;
+
+    @Value("${cloud.aws.credentials.secret-key}")
+    private String secretKey;
+
 
     public StudyMaterialController(StudyMaterialService materialService,
                                    CourseService courseService,
@@ -267,39 +289,52 @@ public class StudyMaterialController {
     public void directDownload(@PathVariable String filename, HttpServletResponse response) {
         System.out.println("Direct download request for file: " + filename);
 
-        Path filePath = Paths.get(uploadDir, filename);
-        File file = filePath.toFile();
-
-        System.out.println("Looking for file at: " + filePath.toAbsolutePath());
+        // Create S3 client
+        AmazonS3 s3Client = AmazonS3ClientBuilder.standard()
+                .withCredentials(new AWSStaticCredentialsProvider(
+                        new BasicAWSCredentials(accessKey, secretKey)))
+                .withRegion(region)
+                .build();
 
         try {
-            if (!file.exists()) {
-                System.out.println("ERROR: File does not exist at path: " + filePath.toAbsolutePath());
+            // Check if file exists in S3
+            boolean fileExists = s3Client.doesObjectExist(bucketName, filename);
+
+            if (!fileExists) {
+                System.out.println("ERROR: File does not exist in S3 bucket: " + bucketName + ", key: " + filename);
                 response.sendError(HttpServletResponse.SC_NOT_FOUND);
                 return;
             }
 
+            // Get object metadata to check file size and content type
+            ObjectMetadata metadata = s3Client.getObjectMetadata(bucketName, filename);
+            long fileSize = metadata.getContentLength();
+
             // Check file size
-            if (file.length() == 0) {
-                System.out.println("WARNING: File exists but has zero length: " + filePath.toAbsolutePath());
+            if (fileSize == 0) {
+                System.out.println("WARNING: File exists but has zero length: " + filename);
             } else {
-                System.out.println("File found with size: " + file.length() + " bytes");
+                System.out.println("File found with size: " + fileSize + " bytes");
             }
 
-            // Get content type from file extension
-            String fileExtension = filename.substring(filename.lastIndexOf('.') + 1);
-            String contentType = determineContentType(fileExtension);
+            // Get content type from file extension if not provided by S3
+            String contentType = metadata.getContentType();
+            if (contentType == null || contentType.equals("application/octet-stream")) {
+                String fileExtension = filename.substring(filename.lastIndexOf('.') + 1);
+                contentType = determineContentType(fileExtension);
+            }
             System.out.println("Using content type: " + contentType);
 
             // Set response headers
             response.setContentType(contentType);
-            response.setContentLength((int) file.length());
+            response.setContentLengthLong(fileSize);
             response.setHeader("Content-Disposition", "attachment; filename=\"" +
                     (filename.contains("-") ? filename.substring(filename.indexOf("-") + 1) : filename) + "\"");
             response.setHeader("X-Frame-Options", "ALLOWALL");
 
-            // Stream the file directly to the response
-            try (InputStream in = new FileInputStream(file);
+            // Get the S3 object and stream it to the response
+            S3Object s3Object = s3Client.getObject(bucketName, filename);
+            try (InputStream in = s3Object.getObjectContent();
                  OutputStream out = response.getOutputStream()) {
 
                 byte[] buffer = new byte[4096];
@@ -319,14 +354,21 @@ public class StudyMaterialController {
                 }
 
                 System.out.println("Sent " + totalBytesRead + " bytes to client");
+            } finally {
+                // Important: Always close S3Object to release resources
+                s3Object.close();
+            }
+        } catch (AmazonS3Exception e) {
+            System.err.println("S3 Error: " + e.getMessage());
+            try {
+                if (!response.isCommitted()) {
+                    response.sendError(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
+                }
+            } catch (IOException ignored) {
+                // If we can't send the error, there's nothing we can do
             }
         } catch (IOException e) {
             System.err.println("Error processing download: " + e.getMessage());
-            if (!(e instanceof ClientAbortException)) {
-                // Only print stack trace for non-client abort exceptions
-                e.printStackTrace();
-            }
-
             try {
                 if (!response.isCommitted()) {
                     response.sendError(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
@@ -337,7 +379,6 @@ public class StudyMaterialController {
         }
     }
 
-
     @GetMapping("/view/{id}")
     public ResponseEntity<?> viewMaterial(@PathVariable String id) {
         Optional<StudyMaterial> materialOpt = studyMaterialRepository.findById(id);
@@ -345,14 +386,53 @@ public class StudyMaterialController {
         if (materialOpt.isEmpty()) {
             return ResponseEntity.notFound().build();
         }
+
         StudyMaterial material = materialOpt.get();
         String fileUrl = material.getFileUrl();
 
+        // Ensure the URL is properly formatted for S3
+        if (!fileUrl.startsWith("https://")) {
+            // If for some reason the URL isn't complete, construct it
+            // This is just a safeguard in case your storage logic changes
+            fileUrl = "https://" + bucketName + ".s3." + region + ".amazonaws.com/" + fileUrl;
+        }
+
+        // Validate URL
+        try {
+            URI uri = new URI(fileUrl);
+            if (!uri.isAbsolute()) {
+                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                        .body("Invalid file URL: not absolute");
+            }
+        }
+        catch (URISyntaxException e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Invalid file URL: " + e.getMessage());
+        }
+
+        // Get file metadata (optional) to check if file exists
+        // Comment out if you don't want this additional check
+    /*
+    try {
+        AmazonS3 s3Client = getS3Client(); // You would need to implement this method
+        String objectKey = fileUrl.substring(fileUrl.lastIndexOf("/") + 1);
+        s3Client.getObjectMetadata(bucketName, objectKey);
+    } catch (AmazonS3Exception e) {
+        if (e.getStatusCode() == 404) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body("File not found in S3 bucket");
+        }
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body("Error accessing file: " + e.getMessage());
+    }
+    */
+
+        // Redirect to the S3 URL
         return ResponseEntity.status(HttpStatus.FOUND)
                 .location(URI.create(fileUrl))
                 .build();
-
     }
+
 
     // Helper method to determine content type
     private String determineContentType(String fileExtension) {
