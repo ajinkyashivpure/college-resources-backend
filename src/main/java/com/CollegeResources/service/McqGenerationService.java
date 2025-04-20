@@ -1,6 +1,12 @@
 package com.CollegeResources.service;
 
 import com.CollegeResources.model.*;
+import com.amazonaws.auth.AWSStaticCredentialsProvider;
+import com.amazonaws.auth.BasicAWSCredentials;
+import com.amazonaws.services.s3.AmazonS3;
+import com.amazonaws.services.s3.AmazonS3ClientBuilder;
+import com.amazonaws.services.s3.model.GetObjectRequest;
+import com.amazonaws.services.s3.model.S3Object;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -15,6 +21,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -33,6 +40,18 @@ public class McqGenerationService {
 
    @Autowired
     private StudyMaterialService studyMaterialService;
+
+    @Value("${cloud.aws.credentials.access-key}")
+    private String accessKey;
+
+    @Value("${cloud.aws.credentials.secret-key}")
+    private String secretKey;
+
+    @Value("${s3.bucket.name}")
+    private String bucketName;
+
+    @Value("${cloud.aws.region.static}")
+    private String region;
 
     @Value("${file.upload-dir}")
     private String uploadDir;
@@ -53,6 +72,7 @@ public class McqGenerationService {
         }
 
         Course course = courseOpt.get();
+        System.out.println("the course id is " + request.getCourseId());
 
         // Get study materials for this course
         List<StudyMaterial> allMaterials = studyMaterialService.getMaterialsByCourse(request.getCourseId());
@@ -66,10 +86,9 @@ public class McqGenerationService {
         System.out.println("Found " + previousYearPapers.size() + " previous year papers");
 
         // Extract content from the previous year papers
-        String previousPapersContent = "";
-        if (!previousYearPapers.isEmpty()) {
-            previousPapersContent = extractContentFromPreviousPapers(previousYearPapers);
-        }
+
+        String previousPapersContent = extractContentFromPreviousPapers(previousYearPapers);
+
 
         String systemMessage = createSystemPrompt(
                 course.getCourseName(),
@@ -210,6 +229,7 @@ public class McqGenerationService {
     }
 
     private String extractContentFromPreviousPapers(List<StudyMaterial> materials) {
+        System.out.println("im in");
         StringBuilder content = new StringBuilder();
         int totalContentLength = 0;
         final int MAX_CONTENT_LENGTH = 10000; // Limit content to avoid exceeding AI model context limits
@@ -221,9 +241,9 @@ public class McqGenerationService {
 
                 // Extract text based on file type
                 if ("pdf".equals(fileType)) {
-                    materialContent = extractTextFromPdf(material.getFilePath());
+                    materialContent = extractTextFromPdf(material.getFileUrl());
                 } else if ("txt".equals(fileType)) {
-                    materialContent = extractTextFromTxt(material.getFilePath());
+                    materialContent = extractTextFromTxt(material.getFileUrl());
                 } else if ("docx".equals(fileType)) {
                     materialContent = "Content from Word document (extraction not implemented)";
                     continue; // Skip unsupported files
@@ -256,13 +276,34 @@ public class McqGenerationService {
         return content.toString();
     }
 
-    private String extractTextFromPdf(String filePath) throws IOException {
-        Path fullPath = Paths.get(uploadDir, filePath);
-        try (PDDocument document = PDDocument.load(fullPath.toFile())) {
+    private String extractTextFromPdf(String fileUrl) throws IOException {
+        System.out.println("hey , i am extracting");
+
+        // Create S3 client
+        AmazonS3 s3Client = AmazonS3ClientBuilder.standard()
+                .withCredentials(new AWSStaticCredentialsProvider(
+                        new BasicAWSCredentials(accessKey, secretKey)))
+                .withRegion(region)
+                .build();
+        // Extract bucket name and object key from the URL
+        String bucketName = "pec-portal-uploads"; // or load from config
+        String objectKey = getObjectKeyFromUrl(fileUrl); // implement this helper
+
+        S3Object s3Object = s3Client.getObject(new GetObjectRequest(bucketName, objectKey));
+
+        try (InputStream inputStream = s3Object.getObjectContent();
+             PDDocument document = PDDocument.load(inputStream)) {
+
             PDFTextStripper stripper = new PDFTextStripper();
             return stripper.getText(document);
         }
     }
+
+    private String getObjectKeyFromUrl(String fileUrl) {
+        // Example URL: https://pec-portal-uploads.s3.ap-south-1.amazonaws.com/abc123xyz.pdf
+        return fileUrl.substring(fileUrl.lastIndexOf("/") + 1);
+    }
+
 
     private String extractTextFromTxt(String filePath) throws IOException {
         Path fullPath = Paths.get(uploadDir, filePath);

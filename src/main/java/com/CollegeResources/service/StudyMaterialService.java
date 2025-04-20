@@ -9,6 +9,7 @@ import com.amazonaws.auth.BasicAWSCredentials;
 import com.amazonaws.services.s3.AmazonS3;
 import com.amazonaws.services.s3.AmazonS3ClientBuilder;
 import com.amazonaws.services.s3.model.CannedAccessControlList;
+import com.amazonaws.services.s3.model.DeleteObjectRequest;
 import com.amazonaws.services.s3.model.ObjectMetadata;
 import com.amazonaws.services.s3.model.PutObjectRequest;
 import org.springframework.beans.factory.annotation.Value;
@@ -124,20 +125,41 @@ public class StudyMaterialService {
     /**
      * Deletes a study material
      */
-    public void deleteMaterial(String id) throws IOException {
-//        Optional<StudyMaterial> materialOpt = studyMaterialRepository.findById(id);
-//        if (materialOpt.isPresent()) {
-//            StudyMaterial material = materialOpt.get();
-//
-//            String fileUrl = material.getFileUrl();
-//            String publicId = extractPublicIdFromUrl(fileUrl);
-//
-//            cloudinary.uploader().destroy(publicId, ObjectUtils.emptyMap());
-//
-//            // Delete from database
-//            studyMaterialRepository.deleteById(id);
-//        }
+    public void deleteMaterial(String materialId) throws IOException {
+        // Find the material by ID
+        StudyMaterial material = studyMaterialRepository.findById(materialId)
+                .orElseThrow(() -> new IOException("Study material not found with ID: " + materialId));
+
+        // Extract the S3 object key from the URL
+        String s3Url = material.getFileUrl();
+        String objectKey = getObjectKeyFromUrl(s3Url);
+
+        // Create S3 client
+        AmazonS3 s3Client = AmazonS3ClientBuilder.standard()
+                .withCredentials(new AWSStaticCredentialsProvider(
+                        new BasicAWSCredentials(accessKey, secretKey)))
+                .withRegion(region)
+                .build();
+
+        try {
+            // Delete the file from S3
+            s3Client.deleteObject(new DeleteObjectRequest(bucketName, objectKey));
+
+            // Delete from the database
+            studyMaterialRepository.deleteById(materialId);
+
+        } catch (AmazonServiceException e) {
+            throw new IOException("Failed to delete file from Amazon S3: " + e.getMessage());
+        } catch (SdkClientException e) {
+            throw new IOException("Error communicating with Amazon S3: " + e.getMessage());
+        }
     }
+
+    // Helper method to extract object key from full S3 URL
+    private String getObjectKeyFromUrl(String s3Url) {
+        return s3Url.substring(s3Url.lastIndexOf("/") + 1);
+    }
+
 
     /**
      * Updates material details (not the file itself)

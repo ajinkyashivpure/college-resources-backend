@@ -35,15 +35,15 @@ public class SecurityConfig {
                 .cors(cors -> cors.configurationSource(corsConfigurationSource()))
                 .csrf(csrf -> csrf.disable()) // Disable CSRF for testing purposes
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers(HttpMethod.POST,"api/user/signup").permitAll()
-                        .requestMatchers(HttpMethod.POST,"api/user/login").permitAll()
-                        .requestMatchers(HttpMethod.POST,"api/user/verify-otp").permitAll()
-                        .requestMatchers("api/materials/direct-download/**").permitAll()
-                        .requestMatchers("api/materials/view/**").permitAll()
-                        .requestMatchers("api/mcq/**").authenticated()
+                        .requestMatchers(HttpMethod.POST,"/api/user/signup").permitAll()
+                        .requestMatchers(HttpMethod.POST,"/api/user/login").permitAll()
+                        .requestMatchers(HttpMethod.POST,"/api/user/verify-otp").permitAll()
+                        .requestMatchers("/api/materials/direct-download/**").permitAll()
+                        .requestMatchers("/api/materials/view/**").permitAll()
+                        .requestMatchers("/api/mcq/**").authenticated()
 
-                        .requestMatchers("api/admin/**").hasRole("ADMIN")
-                        .requestMatchers("api/dashboard/**").authenticated()
+                        .requestMatchers("/api/admin/**").hasRole("ADMIN")
+                        .requestMatchers("/api/dashboard/**").authenticated()
                         .anyRequest().authenticated() // Protect other endpoints
                 )
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
@@ -60,7 +60,7 @@ public class SecurityConfig {
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration config = new CorsConfiguration();
         config.setAllowCredentials(true);
-        config.setAllowedOrigins(List.of("http://localhost:5173")); // Allow React frontend
+        config.setAllowedOrigins(List.of("https://pecportal.vercel.app")); // Allow React frontend
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
         config.setAllowedHeaders(List.of("Authorization", "Content-Type"));
         config.setExposedHeaders(List.of("Content-Disposition"));
