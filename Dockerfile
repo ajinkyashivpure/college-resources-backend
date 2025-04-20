@@ -1,4 +1,8 @@
-FROM ubuntu:latest
-LABEL authors="ajinkyashivpure"
+FROM maven:3.9.6-eclipse-temurin-23 AS build
+COPY . .
+RUN mvn clean package -DskipTests
 
-ENTRYPOINT ["top", "-b"]
+FROM eclipse-temurin:23-jdk-jammy
+COPY --from=build /target/CollegeResources-0.0.1-SNAPSHOT.jar demo.jar
+EXPOSE 8080
+ENTRYPOINT ["java","-jar","demo.jar"]
