@@ -1,15 +1,15 @@
 package com.CollegeResources.service;
 
-import com.CollegeResources.model.*;
+import com.CollegeResources.model.Course;
+import com.CollegeResources.model.McqQuestion;
+import com.CollegeResources.model.McqRequest;
+import com.CollegeResources.model.StudyMaterial;
 import com.amazonaws.auth.AWSStaticCredentialsProvider;
 import com.amazonaws.auth.BasicAWSCredentials;
 import com.amazonaws.services.s3.AmazonS3;
 import com.amazonaws.services.s3.AmazonS3ClientBuilder;
 import com.amazonaws.services.s3.model.GetObjectRequest;
 import com.amazonaws.services.s3.model.S3Object;
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.text.PDFTextStripper;
 import org.springframework.ai.chat.messages.UserMessage;
@@ -25,20 +25,20 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.*;
+import java.util.List;
+import java.util.Optional;
 import java.util.stream.Collectors;
 
 @Service
 public class McqGenerationService {
 
     private final ChatModel chatModel;
-
-
+    private final AIResponseHandler aiResponseHandler;
 
     @Autowired
     private CourseService courseService;
 
-   @Autowired
+    @Autowired
     private StudyMaterialService studyMaterialService;
 
     @Value("${cloud.aws.credentials.access-key}")
@@ -56,12 +56,9 @@ public class McqGenerationService {
     @Value("${file.upload-dir}")
     private String uploadDir;
 
-
-
-    private final ObjectMapper objectMapper = new ObjectMapper();
-
     public McqGenerationService(ChatModel chatModel) {
         this.chatModel = chatModel;
+        this.aiResponseHandler = new AIResponseHandler();
     }
 
     public List<McqQuestion> generateMcqQuestions(McqRequest request) {
@@ -72,7 +69,7 @@ public class McqGenerationService {
         }
 
         Course course = courseOpt.get();
-        System.out.println("the course id is " + request.getCourseId());
+        System.out.println("The course id is " + request.getCourseId());
 
         // Get study materials for this course
         List<StudyMaterial> allMaterials = studyMaterialService.getMaterialsByCourse(request.getCourseId());
@@ -86,9 +83,7 @@ public class McqGenerationService {
         System.out.println("Found " + previousYearPapers.size() + " previous year papers");
 
         // Extract content from the previous year papers
-
         String previousPapersContent = extractContentFromPreviousPapers(previousYearPapers);
-
 
         String systemMessage = createSystemPrompt(
                 course.getCourseName(),
@@ -111,75 +106,21 @@ public class McqGenerationService {
         ChatResponse response = chatModel.call(prompt);
         String jsonResponse = response.getResult().getOutput().getText();
 
-        // Parse JSON response
+        // Use the enhanced response handler to parse the JSON
         try {
-            // Clean the response in case it includes markdown formatting
-            String cleanedJson = cleanJsonResponse(jsonResponse);
-            System.out.println("Cleaned JSON: " + cleanedJson.substring(0, Math.min(100, cleanedJson.length())) + "...");
+            List<McqQuestion> questions = aiResponseHandler.parseAIResponse(jsonResponse, request.getNumberOfQuestions());
 
-            List<McqQuestion> questions = objectMapper.readValue(
-                    jsonResponse, new TypeReference<List<McqQuestion>>() {}
-            );
-
-            // Limit to requested number of questions
-            if (questions.size() > request.getNumberOfQuestions()) {
-                return questions.subList(0, request.getNumberOfQuestions());
-            }
+            // Validate questions to ensure exactly one correct answer per question
+            aiResponseHandler.validateQuestions(questions);
 
             return questions;
-        } catch (JsonProcessingException e) {
+        } catch (Exception e) {
             System.err.println("Failed to parse AI response: " + e.getMessage());
             System.err.println("Original response: " + jsonResponse);
             throw new RuntimeException("Failed to parse AI response: " + e.getMessage() +
-                    "\nPlease try again with different topics.");        }
-
-
-    }
-    private String cleanJsonResponse(String response) {
-        // Look for the JSON array in the response
-        int jsonStart = response.indexOf('[');
-        int jsonEnd = response.lastIndexOf(']');
-
-        if (jsonStart >= 0 && jsonEnd >= 0 && jsonEnd > jsonStart) {
-            // Extract just the JSON array part
-            return response.substring(jsonStart, jsonEnd + 1);
+                    "\nPlease try again with different topics.");
         }
-
-        // If we can't find a JSON array, try to extract from markdown code blocks
-        if (response.contains("```")) {
-            // Find the content between the code block markers
-            int codeStart = response.indexOf("```") + 3;
-            // Skip the language identifier if present (e.g., ```json)
-            if (response.substring(codeStart).startsWith("json")) {
-                codeStart = response.indexOf("\n", codeStart) + 1;
-            } else {
-                // If there's no language identifier, just skip the backticks
-                codeStart = response.indexOf("\n", codeStart - 3) + 1;
-            }
-
-            int codeEnd = response.lastIndexOf("```");
-
-            if (codeStart < codeEnd) {
-                // Extract the code block content
-                String codeBlock = response.substring(codeStart, codeEnd).trim();
-
-                // Now look for the JSON array within the code block
-                jsonStart = codeBlock.indexOf('[');
-                jsonEnd = codeBlock.lastIndexOf(']');
-
-                if (jsonStart >= 0 && jsonEnd >= 0 && jsonEnd > jsonStart) {
-                    return codeBlock.substring(jsonStart, jsonEnd + 1);
-                }
-
-                // If we couldn't find a JSON array, return the whole code block
-                return codeBlock;
-            }
-        }
-
-        // If all else fails, return the original response
-        return response;
     }
-
 
     private String createSystemPrompt(String courseName, String courseCode, String topics,
                                       int numberOfQuestions, boolean hasPreviousPapers,
@@ -207,29 +148,32 @@ public class McqGenerationService {
         prompt.append("Create challenging questions that test deep understanding, not just memorization.\n");
         prompt.append("Each question should have 4 options with only one correct answer.\n\n");
 
-        prompt.append("Format your response as a JSON array of questions with the following structure:\n");
+        prompt.append("EXTREMELY IMPORTANT: Your response MUST be a valid JSON array. Do not include any explanatory text before or after the JSON.\n");
+        prompt.append("Follow this structure exactly:\n");
         prompt.append("[\n");
         prompt.append("    {\n");
         prompt.append("        \"question\": \"Full text of the question\",\n");
         prompt.append("        \"options\": [\n");
-        prompt.append("            {\"option\": \"Option A text\", \"correct\": true|false},\n");
-        prompt.append("            {\"option\": \"Option B text\", \"correct\": true|false},\n");
-        prompt.append("            {\"option\": \"Option C text\", \"correct\": true|false},\n");
-        prompt.append("            {\"option\": \"Option D text\", \"correct\": true|false}\n");
+        prompt.append("            {\"option\": \"Option A text\", \"correct\": false},\n");
+        prompt.append("            {\"option\": \"Option B text\", \"correct\": true},\n");
+        prompt.append("            {\"option\": \"Option C text\", \"correct\": false},\n");
+        prompt.append("            {\"option\": \"Option D text\", \"correct\": false}\n");
         prompt.append("        ],\n");
         prompt.append("        \"explanation\": \"Explanation of the correct answer\"\n");
         prompt.append("    }\n");
         prompt.append("]\n\n");
 
         prompt.append("Ensure exactly one option is marked as correct for each question.\n");
-        prompt.append("Provide comprehensive explanations for the correct answers.");
-        prompt.append("i want strictly a complete json response , it is very mandatory. dont start the response with 'here are your 15 questions...' it must be pure json start to end ");
+        prompt.append("Provide comprehensive explanations for the correct answers.\n");
+        prompt.append("YOUR RESPONSE MUST BE PURE JSON WITHOUT ANY MARKDOWN FORMATTING OR EXPLANATORY TEXT.\n");
+        prompt.append("DO NOT START WITH ```json OR END WITH ``` OR ANY OTHER TEXT.\n");
+        prompt.append("ONLY RETURN THE JSON ARRAY, NOTHING ELSE.");
 
         return prompt.toString();
     }
 
     private String extractContentFromPreviousPapers(List<StudyMaterial> materials) {
-        System.out.println("im in");
+        System.out.println("Extracting content from previous papers");
         StringBuilder content = new StringBuilder();
         int totalContentLength = 0;
         final int MAX_CONTENT_LENGTH = 10000; // Limit content to avoid exceeding AI model context limits
@@ -277,7 +221,7 @@ public class McqGenerationService {
     }
 
     private String extractTextFromPdf(String fileUrl) throws IOException {
-        System.out.println("hey , i am extracting");
+        System.out.println("Extracting text from PDF: " + fileUrl);
 
         // Create S3 client
         AmazonS3 s3Client = AmazonS3ClientBuilder.standard()
@@ -285,9 +229,10 @@ public class McqGenerationService {
                         new BasicAWSCredentials(accessKey, secretKey)))
                 .withRegion(region)
                 .build();
+
         // Extract bucket name and object key from the URL
         String bucketName = "pec-portal-uploads"; // or load from config
-        String objectKey = getObjectKeyFromUrl(fileUrl); // implement this helper
+        String objectKey = getObjectKeyFromUrl(fileUrl);
 
         S3Object s3Object = s3Client.getObject(new GetObjectRequest(bucketName, objectKey));
 
@@ -303,7 +248,6 @@ public class McqGenerationService {
         // Example URL: https://pec-portal-uploads.s3.ap-south-1.amazonaws.com/abc123xyz.pdf
         return fileUrl.substring(fileUrl.lastIndexOf("/") + 1);
     }
-
 
     private String extractTextFromTxt(String filePath) throws IOException {
         Path fullPath = Paths.get(uploadDir, filePath);
