@@ -43,6 +43,9 @@ public class SecurityConfig {
                         .requestMatchers("/api/materials/direct-download/**").permitAll()
                         .requestMatchers("/api/materials/view/**").permitAll()
                         .requestMatchers("/api/mcq/**").authenticated()
+                        .requestMatchers("api/user/forgot-password").permitAll()
+                        .requestMatchers("api/user/verify-reset-otp").permitAll()
+                        .requestMatchers("api/user/reset-password").permitAll()
 
                         .requestMatchers("/api/admin/**").hasRole("ADMIN")
                         .requestMatchers("/api/dashboard/**").authenticated()
@@ -81,3 +84,8 @@ public class SecurityConfig {
 
     }
 }
+
+
+
+
+

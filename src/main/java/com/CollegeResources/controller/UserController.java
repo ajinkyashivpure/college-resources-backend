@@ -67,6 +67,7 @@ public class UserController {
         String otp = String.valueOf((int) (Math.random() * 9000) + 1000);
         otpStore.put(email, otp);
         emailService.sendOtpEmail(email, otp);
+        System.out.println(otp);
 
         // Store signup data temporarily
         otpStore.put(email + "_data",

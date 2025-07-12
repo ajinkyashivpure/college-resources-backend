@@ -39,29 +39,29 @@ public class SemesterCalculator {
             }
 
             // Check if we're in an active semester period
-            boolean isAugustToDecember = currentMonth.getValue() >= Month.AUGUST.getValue() &&
+            boolean isJuneToDecember = currentMonth.getValue() >= Month.JUNE.getValue() &&
                     currentMonth.getValue() <= Month.DECEMBER.getValue();
             boolean isJanuaryToMay = currentMonth.getValue() >= Month.JANUARY.getValue() &&
                     currentMonth.getValue() <= Month.MAY.getValue();
 
-            if (!isAugustToDecember && !isJanuaryToMay) {
-                // June-July is break period
-                // Return the last completed semester
-                if (yearsPassed == 0) {
-                    return isJanuaryToMay ? 2 : 1;
-                } else {
-                    return yearsPassed * 2 + (isJanuaryToMay ? 0 : -1);
-                }
-            }
+//            if (!isJuneToDecember && !isJanuaryToMay) {
+//                // June-July is break period
+//                // Return the last completed semester
+//                if (yearsPassed == 0) {
+//                    return isJanuaryToMay ? 2 : 1;
+//                } else {
+//                    return yearsPassed * 2 + (isJanuaryToMay ? 0 : -1);
+//                }
+//            }
 
             // Calculate semester number
             if (yearsPassed == 0) {
                 // First year
-                return isAugustToDecember ? 1 : 2;
+                return isJuneToDecember ? 1 : 2;
             } else {
                 // Second year onwards
                 int baseSemester = yearsPassed * 2;
-                return isAugustToDecember ? baseSemester + 1 : baseSemester;
+                return isJuneToDecember ? baseSemester + 1 : baseSemester;
             }
         } catch (NumberFormatException e) {
             return 0;
